@@ -1,0 +1,31 @@
+name: Build Blink Print Agent
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build macOS Binary
+        run: |
+          go build -ldflags "-s -w" -o BlinkPrintAgent .
+          mkdir -p "Blink Print Agent.app/Contents/MacOS"
+          mv BlinkPrintAgent "Blink Print Agent.app/Contents/MacOS/"
+          zip -r BlinkPrintAgent-macOS.zip "Blink Print Agent.app"
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlinkPrintAgent-macOS
+          path: BlinkPrintAgent-macOS.zip
