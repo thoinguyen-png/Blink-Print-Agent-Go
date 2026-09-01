@@ -1,0 +1,957 @@
+This file is a merged representation of a subset of the codebase, containing files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching these patterns are excluded: dist/**, *.exe, *.zip, *.app/**, vendor/**, .git/**
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  workflows/
+    build.yml
+printer/
+  driver_darwin.go
+  driver_windows.go
+  driver.go
+config.go
+go.mod
+main.go
+security.go
+server.go
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".github/workflows/build.yml">
+name: Build Blink Print Agent
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build macOS Binary
+        run: |
+          go build -ldflags "-s -w" -o BlinkPrintAgent .
+          mkdir -p "Blink Print Agent.app/Contents/MacOS"
+          mv BlinkPrintAgent "Blink Print Agent.app/Contents/MacOS/"
+          zip -r BlinkPrintAgent-macOS.zip "Blink Print Agent.app"
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlinkPrintAgent-macOS
+          path: BlinkPrintAgent-macOS.zip
+</file>
+
+<file path="printer/driver_darwin.go">
+//go:build darwin
+
+package printer
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+)
+
+type DarwinDriver struct{}
+
+func NewDriver() Driver {
+	return &DarwinDriver{}
+}
+
+func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
+	cmd := exec.Command("lpstat", "-p")
+	out, err := cmd.Output()
+	if err != nil {
+		return []string{}, nil
+	}
+
+	var printers []string
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		parts := strings.Fields(line)
+		if len(parts) >= 2 && parts[0] == "printer" {
+			printers = append(printers, parts[1])
+		}
+	}
+	return printers, nil
+}
+
+func (d *DarwinDriver) GetDefaultPrinter() (string, error) {
+	cmd := exec.Command("lpstat", "-d")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", nil
+	}
+	parts := strings.Split(string(out), ":")
+	if len(parts) == 2 {
+		return strings.TrimSpace(parts[1]), nil
+	}
+	return "", nil
+}
+
+func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
+	if printerName == "" {
+		return HealthInfo{
+			State:   "not_configured",
+			Message: "Chưa chọn máy in cho Blink Print Agent.",
+		}
+	}
+
+	installedList, _ := d.GetInstalledPrinters()
+	installed := false
+	for _, p := range installedList {
+		if strings.EqualFold(p, printerName) {
+			installed = true
+			printerName = p
+			break
+		}
+	}
+
+	if !installed {
+		return HealthInfo{
+			Name:      printerName,
+			State:     "not_installed",
+			Message:   fmt.Sprintf("Máy in %s không tồn tại trong CUPS/macOS.", printerName),
+			Installed: false,
+		}
+	}
+
+	cmd := exec.Command("lpstat", "-p", printerName)
+	out, err := cmd.Output()
+	statusText := strings.ToLower(string(out))
+
+	if err != nil || strings.Contains(statusText, "disabled") || strings.Contains(statusText, "paused") {
+		return HealthInfo{
+			Name:      printerName,
+			Installed: true,
+			State:     "paused",
+			Message:   fmt.Sprintf("Hàng đợi máy in %s đang tạm dừng.", printerName),
+		}
+	}
+
+	return HealthInfo{
+		Name:       printerName,
+		Installed:  true,
+		Configured: true,
+		Ready:      true,
+		State:      "ready",
+		Message:    "Máy in sẵn sàng.",
+	}
+}
+
+func (d *DarwinDriver) SendRaw(printerName string, data []byte, docName string) error {
+	tmpFile, err := os.CreateTemp("", "blink_raw_*.bin")
+	if err != nil {
+		return fmt.Errorf("không thể tạo file in tạm: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("lỗi ghi dữ liệu in: %w", err)
+	}
+	_ = tmpFile.Close()
+
+	cmd := exec.Command("lpr", "-P", printerName, "-o", "raw", "-T", docName, tmpFile.Name())
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("CUPS print error: %s (%w)", stderr.String(), err)
+	}
+	return nil
+}
+</file>
+
+<file path="printer/driver_windows.go">
+//go:build windows
+
+package printer
+
+import (
+	"fmt"
+	"syscall"
+	"unsafe"
+)
+
+var (
+	winspool               = syscall.NewLazyDLL("winspool.drv")
+	procOpenPrinterW       = winspool.NewProc("OpenPrinterW")
+	procClosePrinter       = winspool.NewProc("ClosePrinter")
+	procStartDocPrinterW   = winspool.NewProc("StartDocPrinterW")
+	procEndDocPrinter     = winspool.NewProc("EndDocPrinter")
+	procStartPagePrinter   = winspool.NewProc("StartPagePrinter")
+	procEndPagePrinter     = winspool.NewProc("EndPagePrinter")
+	procWritePrinter       = winspool.NewProc("WritePrinter")
+	procEnumPrintersW      = winspool.NewProc("EnumPrintersW")
+	procGetDefaultPrinterW = winspool.NewProc("GetDefaultPrinterW")
+)
+
+type DOC_INFO_1 struct {
+	DocName    *uint16
+	OutputFile *uint16
+	Datatype   *uint16
+}
+
+type PRINTER_INFO_4 struct {
+	PrinterName *uint16
+	ServerName  *uint16
+	Attributes  uint32
+}
+
+type WindowsDriver struct{}
+
+func NewDriver() Driver {
+	return &WindowsDriver{}
+}
+
+func (d *WindowsDriver) GetInstalledPrinters() ([]string, error) {
+	var flags uint32 = 2 | 4 // PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS
+	var needed, returned uint32
+
+	procEnumPrintersW.Call(
+		uintptr(flags),
+		0,
+		4,
+		0,
+		0,
+		uintptr(unsafe.Pointer(&needed)),
+		uintptr(unsafe.Pointer(&returned)),
+	)
+	if needed == 0 {
+		return []string{}, nil
+	}
+
+	buf := make([]byte, needed)
+	r1, _, _ := procEnumPrintersW.Call(
+		uintptr(flags),
+		0,
+		4,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(needed),
+		uintptr(unsafe.Pointer(&needed)),
+		uintptr(unsafe.Pointer(&returned)),
+	)
+	if r1 == 0 {
+		return []string{}, fmt.Errorf("EnumPrintersW failed")
+	}
+
+	var printers []string
+	size := unsafe.Sizeof(PRINTER_INFO_4{})
+	for i := uintptr(0); i < uintptr(returned); i++ {
+		info := (*PRINTER_INFO_4)(unsafe.Pointer(&buf[i*size]))
+		if info.PrinterName != nil {
+			printers = append(printers, syscall.UTF16ToString((*[1 << 16]uint16)(unsafe.Pointer(info.PrinterName))[:]))
+		}
+	}
+	return printers, nil
+}
+
+func (d *WindowsDriver) GetDefaultPrinter() (string, error) {
+	var needed uint32
+	procGetDefaultPrinterW.Call(0, uintptr(unsafe.Pointer(&needed)))
+	if needed == 0 {
+		return "", nil
+	}
+	buf := make([]uint16, needed)
+	r1, _, _ := procGetDefaultPrinterW.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&needed)))
+	if r1 == 0 {
+		return "", nil
+	}
+	return syscall.UTF16ToString(buf), nil
+}
+
+func (d *WindowsDriver) GetHealth(printerName string) HealthInfo {
+	if printerName == "" {
+		return HealthInfo{State: "not_configured", Message: "Chưa chọn máy in."}
+	}
+	installedPrinters, _ := d.GetInstalledPrinters()
+	installed := false
+	for _, p := range installedPrinters {
+		if p == printerName {
+			installed = true
+			break
+		}
+	}
+	if !installed {
+		return HealthInfo{Name: printerName, State: "not_installed", Message: "Máy in không tồn tại trong Windows."}
+	}
+	return HealthInfo{Name: printerName, Configured: true, Installed: true, Ready: true, State: "ready", Message: "Máy in sẵn sàng."}
+}
+
+func (d *WindowsDriver) SendRaw(printerName string, data []byte, docName string) error {
+	pName, _ := syscall.UTF16PtrFromString(printerName)
+	var handle syscall.Handle
+	r1, _, err := procOpenPrinterW.Call(uintptr(unsafe.Pointer(pName)), uintptr(unsafe.Pointer(&handle)), 0)
+	if r1 == 0 {
+		return fmt.Errorf("OpenPrinter error: %w", err)
+	}
+	defer procClosePrinter.Call(uintptr(handle))
+
+	dName, _ := syscall.UTF16PtrFromString(docName)
+	dType, _ := syscall.UTF16PtrFromString("RAW")
+	docInfo := DOC_INFO_1{DocName: dName, OutputFile: nil, Datatype: dType}
+
+	jobId, _, err := procStartDocPrinterW.Call(uintptr(handle), 1, uintptr(unsafe.Pointer(&docInfo)))
+	if jobId == 0 {
+		return fmt.Errorf("StartDocPrinter error: %w", err)
+	}
+	defer procEndDocPrinter.Call(uintptr(handle))
+
+	procStartPagePrinter.Call(uintptr(handle))
+	defer procEndPagePrinter.Call(uintptr(handle))
+
+	var written uint32
+	r1, _, err = procWritePrinter.Call(uintptr(handle), uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)), uintptr(unsafe.Pointer(&written)))
+	if r1 == 0 || written != uint32(len(data)) {
+		return fmt.Errorf("WritePrinter failed: %w", err)
+	}
+	return nil
+}
+</file>
+
+<file path="printer/driver.go">
+package printer
+
+import (
+	"strings"
+)
+
+type HealthInfo struct {
+	Name        string `json:"name"`
+	Configured  bool   `json:"configured"`
+	Installed   bool   `json:"installed"`
+	Ready       bool   `json:"ready"`
+	State       string `json:"state"`
+	Message     string `json:"message"`
+	Jobs        uint32 `json:"jobs"`
+	ProblemJobs uint32 `json:"problem_jobs"`
+	StalledJobs uint32 `json:"stalled_jobs"`
+}
+
+type Driver interface {
+	GetInstalledPrinters() ([]string, error)
+	GetDefaultPrinter() (string, error)
+	GetHealth(printerName string) HealthInfo
+	SendRaw(printerName string, data []byte, docName string) error
+}
+
+func BuildCutTestTicket() []byte {
+	var ticket []byte
+	ticket = append(ticket, 0x1B, 0x40) // ESC @
+	ticket = append(ticket, []byte("BLINK PRINT AGENT\nRAW ESC/POS TEST\nXP-80 CUT TEST\n------------------------------\nCUT OK = STEP 2 PASS\n\n\n")...)
+	ticket = append(ticket, 0x1B, 0x64, 0x04)       // ESC d 4
+	ticket = append(ticket, 0x1D, 0x56, 0x42, 0x00) // GS V B 0 (Cut)
+	return ticket
+}
+
+func NormalizeRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "kitchen":
+		return "kitchen"
+	case "storage":
+		return "storage"
+	default:
+		return "cashier"
+	}
+}
+</file>
+
+<file path="config.go">
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+)
+
+type AgentSettings struct {
+	PrinterName        string   `json:"printerName"`
+	CashierPrinterName string   `json:"cashierPrinterName"`
+	KitchenPrinterName string   `json:"kitchenPrinterName"`
+	StoragePrinterName string   `json:"storagePrinterName"`
+	AllowedOrigins     []string `json:"allowedOrigins"`
+}
+
+type AgentSettingsStore struct {
+	mu           sync.RWMutex
+	settingsPath string
+}
+
+func NewAgentSettingsStore() *AgentSettingsStore {
+	var baseDir string
+	if runtime.GOOS == "windows" {
+		baseDir = os.Getenv("LOCALAPPDATA")
+		if baseDir == "" {
+			baseDir = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+	} else {
+		home, _ := os.UserHomeDir()
+		baseDir = filepath.Join(home, "Library", "Application Support")
+	}
+
+	dataDir := filepath.Join(baseDir, "Blink", "PrintAgent")
+	_ = os.MkdirAll(dataDir, 0755)
+
+	return &AgentSettingsStore{
+		settingsPath: filepath.Join(dataDir, "settings.json"),
+	}
+}
+
+func (s *AgentSettingsStore) Load() *AgentSettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	settings := &AgentSettings{AllowedOrigins: []string{}}
+	data, err := os.ReadFile(s.settingsPath)
+	if err != nil {
+		s.saveNoLock(settings)
+		return settings
+	}
+
+	if err := json.Unmarshal(data, settings); err != nil {
+		return &AgentSettings{AllowedOrigins: []string{}}
+	}
+
+	changed := false
+	if settings.CashierPrinterName == "" && settings.PrinterName != "" {
+		settings.CashierPrinterName = strings.TrimSpace(settings.PrinterName)
+		changed = true
+	}
+	if settings.PrinterName == "" && settings.CashierPrinterName != "" {
+		settings.PrinterName = strings.TrimSpace(settings.CashierPrinterName)
+		changed = true
+	}
+
+	if changed {
+		s.saveNoLock(settings)
+	}
+
+	return settings
+}
+
+func (s *AgentSettingsStore) Save(settings *AgentSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveNoLock(settings)
+}
+
+func (s *AgentSettingsStore) saveNoLock(settings *AgentSettings) error {
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.settingsPath, data, 0644)
+}
+</file>
+
+<file path="go.mod">
+module blink-print-agent
+
+go 1.27.0
+
+require (
+	github.com/getlantern/context v0.0.0-20190109183933-c447772a6520 // indirect
+	github.com/getlantern/errors v0.0.0-20190325191628-abdb3e3e36f7 // indirect
+	github.com/getlantern/golog v0.0.0-20190830074920-4ef2e798c2d7 // indirect
+	github.com/getlantern/hex v0.0.0-20190417191902-c6586a6fe0b7 // indirect
+	github.com/getlantern/hidden v0.0.0-20190325191715-f02dbb02be55 // indirect
+	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
+	github.com/getlantern/systray v1.2.2 // indirect
+	github.com/go-stack/stack v1.8.0 // indirect
+	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
+	golang.org/x/sys v0.1.0 // indirect
+)
+</file>
+
+<file path="main.go">
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"blink-print-agent/printer"
+	"github.com/getlantern/systray"
+)
+
+var (
+	store    *AgentSettingsStore
+	security *SecurityManager
+	drv      printer.Driver
+	server   *Server
+)
+
+func main() {
+	store = NewAgentSettingsStore()
+	security = NewSecurityManager(store)
+	drv = printer.NewDriver()
+	server = NewServer(store, security, drv)
+
+	go func() {
+		if err := server.Start(); err != nil {
+			fmt.Printf("Server Error: %v\n", err)
+		}
+	}()
+
+	systray.Run(onReady, onExit)
+}
+
+func onReady() {
+	systray.SetTitle("Blink Print Agent")
+	systray.SetTooltip("Blink Print Agent (Online)")
+
+	mStatus := systray.AddMenuItem("Blink Agent: Online", "Trạng thái Agent")
+	mStatus.Disable()
+
+	systray.AddSeparator()
+
+	mTest := systray.AddMenuItem("In thử kiểm tra máy in", "Gửi lệnh ESC/POS in test")
+	systray.AddSeparator()
+	mQuit := systray.AddMenuItem("Thoát", "Đóng ứng dụng")
+
+	go func() {
+		for {
+			select {
+			case <-mTest.ClickedCh:
+				settings := store.Load()
+				cashier := server.resolvePrinter(settings, "cashier")
+				_ = drv.SendRaw(cashier, printer.BuildCutTestTicket(), "Blink Print - Cut Test")
+			case <-mQuit.ClickedCh:
+				systray.Quit()
+				return
+			}
+		}
+	}()
+}
+
+func onExit() {
+	os.Exit(0)
+}
+</file>
+
+<file path="security.go">
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+)
+
+// URL cấu hình danh sách domain tập trung trên Cloud
+const RemoteOriginsURL = "https://api.blinkgo.tech/v1/agent/allowed-origins.json"
+
+type SecurityManager struct {
+	mu           sync.RWMutex
+	store        *AgentSettingsStore
+	allowedRoots []string
+}
+
+func NewSecurityManager(store *AgentSettingsStore) *SecurityManager {
+	sm := &SecurityManager{
+		store:        store,
+		allowedRoots: []string{"blinkgo.tech", "santori.vn"}, // Domain mặc định cơ sở
+	}
+
+	// Nạp domain từ cache cục bộ đã lưu trước đó
+	cachedSettings := store.Load()
+	if len(cachedSettings.AllowedOrigins) > 0 {
+		sm.allowedRoots = cachedSettings.AllowedOrigins
+	}
+
+	// Bắt đầu tiến trình tự động đồng bộ từ Cloud ngầm
+	go sm.startSyncWorker()
+
+	return sm
+}
+
+// Kiểm tra xem Origin gửi lên có hợp lệ hay không (hỗ trợ cả root domain và subdomain)
+func (sm *SecurityManager) IsOriginAllowed(origin string) bool {
+	if strings.TrimSpace(origin) == "" {
+		return true
+	}
+	norm := NormalizeOrigin(origin)
+	if norm == "" {
+		return false
+	}
+
+	u, err := url.Parse(norm)
+	if err != nil {
+		return false
+	}
+
+	hostname := strings.ToLower(u.Hostname())
+
+	// 1. Luôn cho phép chạy local / dev
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
+		return true
+	}
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	// 2. Cho phép chính xác domain hoặc bất kỳ subdomain nào của root domain
+	for _, root := range sm.allowedRoots {
+		rootNorm := strings.ToLower(strings.TrimSpace(root))
+		if rootNorm == "" {
+			continue
+		}
+		if hostname == rootNorm || strings.HasSuffix(hostname, "."+rootNorm) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Đồng bộ danh sách domain từ xa định kỳ mỗi 2 tiếng
+func (sm *SecurityManager) startSyncWorker() {
+	sm.fetchRemoteOrigins()
+	ticker := time.NewTicker(2 * time.Hour)
+	for range ticker.C {
+		sm.fetchRemoteOrigins()
+	}
+}
+
+func (sm *SecurityManager) fetchRemoteOrigins() {
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(RemoteOriginsURL)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return
+	}
+	defer resp.Body.Close()
+
+	var remoteDomains []string
+	if err := json.NewDecoder(resp.Body).Decode(&remoteDomains); err != nil || len(remoteDomains) == 0 {
+		return
+	}
+
+	sm.mu.Lock()
+	sm.allowedRoots = remoteDomains
+	sm.mu.Unlock()
+
+	// Cập nhật lưu vào file cấu hình máy tính để dùng offline
+	settings := sm.store.Load()
+	settings.AllowedOrigins = remoteDomains
+	_ = sm.store.Save(settings)
+}
+
+func NormalizeOrigin(origin string) string {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return ""
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+}
+</file>
+
+<file path="server.go">
+package main
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"sync"
+
+	"blink-print-agent/printer"
+)
+
+type Server struct {
+	store    *AgentSettingsStore
+	security *SecurityManager
+	driver   printer.Driver
+	printMu  sync.Mutex
+	httpServ *http.Server
+}
+
+func NewServer(store *AgentSettingsStore, sec *SecurityManager, drv printer.Driver) *Server {
+	return &Server{store: store, security: sec, driver: drv}
+}
+
+func (s *Server) Start() error {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/v1/security", s.handleSecurity)
+	mux.HandleFunc("/v1/health", s.handleHealth)
+	mux.HandleFunc("/v1/printers", s.handlePrinters)
+	mux.HandleFunc("/v1/settings/printer", s.handleSetPrinter)
+	mux.HandleFunc("/v1/print/test", s.handleTestPrint)
+	mux.HandleFunc("/v1/print/raw", s.handleRawPrint)
+
+	handler := s.corsMiddleware(mux)
+	s.httpServ = &http.Server{Addr: "127.0.0.1:18181", Handler: handler}
+	return s.httpServ.ListenAndServe()
+}
+
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+
+		if !s.security.IsOriginAllowed(origin) {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": false, "error_code": "origin_not_allowed", "message": "Domain không thuộc danh sách cấp phép của Blink.",
+			})
+			return
+		}
+
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Blink-Print-Token, Access-Control-Request-Private-Network")
+		w.Header().Set("Access-Control-Allow-Private-Network", "true")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("Cache-Control", "no-store")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) resolvePrinter(settings *AgentSettings, role string) string {
+	norm := printer.NormalizeRole(role)
+	cashier := settings.CashierPrinterName
+	if cashier == "" {
+		cashier, _ = s.driver.GetDefaultPrinter()
+	}
+
+	if norm == "kitchen" && settings.KitchenPrinterName != "" {
+		return settings.KitchenPrinterName
+	}
+	if norm == "storage" && settings.StoragePrinterName != "" {
+		return settings.StoragePrinterName
+	}
+	return cashier
+}
+
+func (s *Server) handleSecurity(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":        true,
+		"version":        "0.8.2",
+		"token_enforced": false,
+		"origin":         NormalizeOrigin(origin),
+		"origin_allowed": s.security.IsOriginAllowed(origin),
+		"message":        "Dynamic Cloud Origin Security active.",
+	})
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	settings := s.store.Load()
+	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
+	targetPrinter := s.resolvePrinter(settings, role)
+	health := s.driver.GetHealth(targetPrinter)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":              true,
+		"name":                 "Blink Print Agent",
+		"version":              "0.8.2",
+		"status":               "online",
+		"port":                 18181,
+		"printer_role":         role,
+		"printer":              health.Name,
+		"printer_ready":        health.Ready,
+		"printer_state":        health.State,
+		"printer_message":      health.Message,
+		"printer_installed":    health.Installed,
+		"printer_configured":   health.Configured,
+		"printer_jobs":         health.Jobs,
+		"printer_assignments": map[string]string{
+			"cashier": s.resolvePrinter(settings, "cashier"),
+			"kitchen": s.resolvePrinter(settings, "kitchen"),
+			"storage": s.resolvePrinter(settings, "storage"),
+		},
+	})
+}
+
+func (s *Server) handlePrinters(w http.ResponseWriter, r *http.Request) {
+	settings := s.store.Load()
+	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
+	list, _ := s.driver.GetInstalledPrinters()
+	def, _ := s.driver.GetDefaultPrinter()
+	target := s.resolvePrinter(settings, role)
+	health := s.driver.GetHealth(target)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":         true,
+		"printer_role":    role,
+		"printer":         target,
+		"defaultPrinter":  def,
+		"printers":        list,
+		"printer_ready":   health.Ready,
+		"printer_state":   health.State,
+		"printer_message": health.Message,
+	})
+}
+
+func (s *Server) handleSetPrinter(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PrinterName string `json:"printer_name"`
+		PrinterRole string `json:"printer_role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	role := printer.NormalizeRole(body.PrinterRole)
+	settings := s.store.Load()
+	switch role {
+	case "kitchen":
+		settings.KitchenPrinterName = body.PrinterName
+	case "storage":
+		settings.StoragePrinterName = body.PrinterName
+	default:
+		settings.CashierPrinterName = body.PrinterName
+		settings.PrinterName = body.PrinterName
+	}
+	_ = s.store.Save(settings)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "printer_role": role, "selected": body.PrinterName})
+}
+
+func (s *Server) handleTestPrint(w http.ResponseWriter, r *http.Request) {
+	s.printMu.Lock()
+	defer s.printMu.Unlock()
+
+	settings := s.store.Load()
+	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
+	targetPrinter := s.resolvePrinter(settings, role)
+	health := s.driver.GetHealth(targetPrinter)
+
+	if !health.Ready {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error_code": "printer_" + health.State, "message": health.Message})
+		return
+	}
+
+	err := s.driver.SendRaw(targetPrinter, printer.BuildCutTestTicket(), "Blink Print Agent - TEST")
+	if err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "printer_role": role, "printer": targetPrinter, "message": "Đã in test thành công."})
+}
+
+func (s *Server) handleRawPrint(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DocumentName string `json:"document_name"`
+		RawBase64    string `json:"raw_base64"`
+		PrinterRole  string `json:"printer_role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RawBase64 == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	rawBytes, err := base64.StdEncoding.DecodeString(body.RawBase64)
+	if err != nil || len(rawBytes) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	s.printMu.Lock()
+	defer s.printMu.Unlock()
+
+	settings := s.store.Load()
+	role := printer.NormalizeRole(body.PrinterRole)
+	targetPrinter := s.resolvePrinter(settings, role)
+
+	docName := body.DocumentName
+	if docName == "" {
+		docName = "Blink Print"
+	}
+
+	if err := s.driver.SendRaw(targetPrinter, rawBytes, docName); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "printer_role": role, "printer": targetPrinter, "bytes": len(rawBytes)})
+}
+</file>
+
+</files>

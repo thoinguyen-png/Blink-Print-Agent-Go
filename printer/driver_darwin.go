@@ -17,31 +17,46 @@ func NewDriver() Driver {
 }
 
 func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
-	cmd := exec.Command("lpstat", "-p")
+	// Dùng đường dẫn tuyệt đối để app chạy ngầm không bị thiếu PATH
+	cmd := exec.Command("/usr/bin/lpstat", "-a")
 	out, err := cmd.Output()
 	if err != nil {
-		return []string{}, nil
+		// Fallback thử với -p nếu -a lỗi
+		cmd = exec.Command("/usr/bin/lpstat", "-p")
+		out, err = cmd.Output()
+		if err != nil {
+			return []string{}, nil
+		}
 	}
 
 	var printers []string
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 		parts := strings.Fields(line)
-		if len(parts) >= 2 && parts[0] == "printer" {
-			printers = append(printers, parts[1])
+		if len(parts) > 0 {
+			if parts[0] == "printer" && len(parts) >= 2 {
+				printers = append(printers, parts[1])
+			} else {
+				// Output của 'lpstat -a' từ đầu tiên luôn là tên máy in
+				printers = append(printers, parts[0])
+			}
 		}
 	}
 	return printers, nil
 }
 
 func (d *DarwinDriver) GetDefaultPrinter() (string, error) {
-	cmd := exec.Command("lpstat", "-d")
+	cmd := exec.Command("/usr/bin/lpstat", "-d")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", nil
 	}
 	parts := strings.Split(string(out), ":")
-	if len(parts) == 2 {
+	if len(parts) >= 2 {
 		return strings.TrimSpace(parts[1]), nil
 	}
 	return "", nil
@@ -57,10 +72,12 @@ func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
 
 	installedList, _ := d.GetInstalledPrinters()
 	installed := false
+	actualPrinterName := printerName
+
 	for _, p := range installedList {
-		if strings.EqualFold(p, printerName) {
+		if strings.EqualFold(strings.TrimSpace(p), strings.TrimSpace(printerName)) {
 			installed = true
-			printerName = p
+			actualPrinterName = p
 			break
 		}
 	}
@@ -74,21 +91,21 @@ func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
 		}
 	}
 
-	cmd := exec.Command("lpstat", "-p", printerName)
+	cmd := exec.Command("/usr/bin/lpstat", "-p", actualPrinterName)
 	out, err := cmd.Output()
 	statusText := strings.ToLower(string(out))
 
 	if err != nil || strings.Contains(statusText, "disabled") || strings.Contains(statusText, "paused") {
 		return HealthInfo{
-			Name:      printerName,
+			Name:      actualPrinterName,
 			Installed: true,
 			State:     "paused",
-			Message:   fmt.Sprintf("Hàng đợi máy in %s đang tạm dừng.", printerName),
+			Message:   fmt.Sprintf("Hàng đợi máy in %s đang tạm dừng.", actualPrinterName),
 		}
 	}
 
 	return HealthInfo{
-		Name:       printerName,
+		Name:       actualPrinterName,
 		Installed:  true,
 		Configured: true,
 		Ready:      true,
@@ -109,7 +126,7 @@ func (d *DarwinDriver) SendRaw(printerName string, data []byte, docName string) 
 	}
 	_ = tmpFile.Close()
 
-	cmd := exec.Command("lpr", "-P", printerName, "-o", "raw", "-T", docName, tmpFile.Name())
+	cmd := exec.Command("/usr/bin/lpr", "-P", printerName, "-o", "raw", "-T", docName, tmpFile.Name())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

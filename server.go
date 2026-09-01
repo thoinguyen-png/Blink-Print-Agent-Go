@@ -104,22 +104,27 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
 	targetPrinter := s.resolvePrinter(settings, role)
 	health := s.driver.GetHealth(targetPrinter)
+	installedList, _ := s.driver.GetInstalledPrinters()
+	defPrinter, _ := s.driver.GetDefaultPrinter()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"success":              true,
-		"name":                 "Blink Print Agent",
-		"version":              "0.8.2",
-		"status":               "online",
-		"port":                 18181,
-		"printer_role":         role,
-		"printer":              health.Name,
-		"printer_ready":        health.Ready,
-		"printer_state":        health.State,
-		"printer_message":      health.Message,
-		"printer_installed":    health.Installed,
-		"printer_configured":   health.Configured,
-		"printer_jobs":         health.Jobs,
+		"success":            true,
+		"name":               "Blink Print Agent",
+		"version":            "0.8.2",
+		"status":             "online",
+		"port":               18181,
+		"printer_role":       role,
+		"printer":            health.Name,
+		"defaultPrinter":     defPrinter,
+		"available_printers": installedList, // Đổ danh sách vào Dropdown web
+		"printers":           installedList, // Dự phòng
+		"printer_ready":      health.Ready,
+		"printer_state":      health.State,
+		"printer_message":    health.Message,
+		"printer_installed":  health.Installed,
+		"printer_configured": health.Configured,
+		"printer_jobs":       health.Jobs,
 		"printer_assignments": map[string]string{
 			"cashier": s.resolvePrinter(settings, "cashier"),
 			"kitchen": s.resolvePrinter(settings, "kitchen"),
