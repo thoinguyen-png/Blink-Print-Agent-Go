@@ -50,6 +50,7 @@ printer/
   driver.go
 config.go
 go.mod
+Info.plist
 main.go
 security.go
 server.go
@@ -57,162 +58,6 @@ server.go
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path=".github/workflows/build.yml">
-name: Build Blink Print Agent
-
-on:
-  push:
-    branches: [ "main", "master" ]
-  workflow_dispatch:
-
-jobs:
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Build macOS Binary
-        run: |
-          go build -ldflags "-s -w" -o BlinkPrintAgent .
-          mkdir -p "Blink Print Agent.app/Contents/MacOS"
-          mv BlinkPrintAgent "Blink Print Agent.app/Contents/MacOS/"
-          zip -r BlinkPrintAgent-macOS.zip "Blink Print Agent.app"
-
-      - name: Upload macOS Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: BlinkPrintAgent-macOS
-          path: BlinkPrintAgent-macOS.zip
-</file>
-
-<file path="printer/driver_darwin.go">
-//go:build darwin
-
-package printer
-
-import (
-	"bytes"
-	"fmt"
-	"os"
-	"os/exec"
-	"strings"
-)
-
-type DarwinDriver struct{}
-
-func NewDriver() Driver {
-	return &DarwinDriver{}
-}
-
-func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
-	cmd := exec.Command("lpstat", "-p")
-	out, err := cmd.Output()
-	if err != nil {
-		return []string{}, nil
-	}
-
-	var printers []string
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
-		parts := strings.Fields(line)
-		if len(parts) >= 2 && parts[0] == "printer" {
-			printers = append(printers, parts[1])
-		}
-	}
-	return printers, nil
-}
-
-func (d *DarwinDriver) GetDefaultPrinter() (string, error) {
-	cmd := exec.Command("lpstat", "-d")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", nil
-	}
-	parts := strings.Split(string(out), ":")
-	if len(parts) == 2 {
-		return strings.TrimSpace(parts[1]), nil
-	}
-	return "", nil
-}
-
-func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
-	if printerName == "" {
-		return HealthInfo{
-			State:   "not_configured",
-			Message: "Chưa chọn máy in cho Blink Print Agent.",
-		}
-	}
-
-	installedList, _ := d.GetInstalledPrinters()
-	installed := false
-	for _, p := range installedList {
-		if strings.EqualFold(p, printerName) {
-			installed = true
-			printerName = p
-			break
-		}
-	}
-
-	if !installed {
-		return HealthInfo{
-			Name:      printerName,
-			State:     "not_installed",
-			Message:   fmt.Sprintf("Máy in %s không tồn tại trong CUPS/macOS.", printerName),
-			Installed: false,
-		}
-	}
-
-	cmd := exec.Command("lpstat", "-p", printerName)
-	out, err := cmd.Output()
-	statusText := strings.ToLower(string(out))
-
-	if err != nil || strings.Contains(statusText, "disabled") || strings.Contains(statusText, "paused") {
-		return HealthInfo{
-			Name:      printerName,
-			Installed: true,
-			State:     "paused",
-			Message:   fmt.Sprintf("Hàng đợi máy in %s đang tạm dừng.", printerName),
-		}
-	}
-
-	return HealthInfo{
-		Name:       printerName,
-		Installed:  true,
-		Configured: true,
-		Ready:      true,
-		State:      "ready",
-		Message:    "Máy in sẵn sàng.",
-	}
-}
-
-func (d *DarwinDriver) SendRaw(printerName string, data []byte, docName string) error {
-	tmpFile, err := os.CreateTemp("", "blink_raw_*.bin")
-	if err != nil {
-		return fmt.Errorf("không thể tạo file in tạm: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.Write(data); err != nil {
-		return fmt.Errorf("lỗi ghi dữ liệu in: %w", err)
-	}
-	_ = tmpFile.Close()
-
-	cmd := exec.Command("lpr", "-P", printerName, "-o", "raw", "-T", docName, tmpFile.Name())
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("CUPS print error: %s (%w)", stderr.String(), err)
-	}
-	return nil
-}
-</file>
 
 <file path="printer/driver_windows.go">
 //go:build windows
@@ -519,6 +364,29 @@ require (
 )
 </file>
 
+<file path="Info.plist">
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>BlinkPrintAgent</string>
+    <key>CFBundleIdentifier</key>
+    <string>tech.blinkgo.printagent</string>
+    <key>CFBundleName</key>
+    <string>Blink Print Agent</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.8.2</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSUIElement</key>
+    <true/> 
+</dict>
+</plist>
+</file>
+
 <file path="main.go">
 package main
 
@@ -816,22 +684,27 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
 	targetPrinter := s.resolvePrinter(settings, role)
 	health := s.driver.GetHealth(targetPrinter)
+	installedList, _ := s.driver.GetInstalledPrinters()
+	defPrinter, _ := s.driver.GetDefaultPrinter()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"success":              true,
-		"name":                 "Blink Print Agent",
-		"version":              "0.8.2",
-		"status":               "online",
-		"port":                 18181,
-		"printer_role":         role,
-		"printer":              health.Name,
-		"printer_ready":        health.Ready,
-		"printer_state":        health.State,
-		"printer_message":      health.Message,
-		"printer_installed":    health.Installed,
-		"printer_configured":   health.Configured,
-		"printer_jobs":         health.Jobs,
+		"success":            true,
+		"name":               "Blink Print Agent",
+		"version":            "0.8.2",
+		"status":             "online",
+		"port":               18181,
+		"printer_role":       role,
+		"printer":            health.Name,
+		"defaultPrinter":     defPrinter,
+		"available_printers": installedList, // Đổ danh sách vào Dropdown web
+		"printers":           installedList, // Dự phòng
+		"printer_ready":      health.Ready,
+		"printer_state":      health.State,
+		"printer_message":    health.Message,
+		"printer_installed":  health.Installed,
+		"printer_configured": health.Configured,
+		"printer_jobs":       health.Jobs,
 		"printer_assignments": map[string]string{
 			"cashier": s.resolvePrinter(settings, "cashier"),
 			"kitchen": s.resolvePrinter(settings, "kitchen"),
@@ -951,6 +824,197 @@ func (s *Server) handleRawPrint(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "printer_role": role, "printer": targetPrinter, "bytes": len(rawBytes)})
+}
+</file>
+
+<file path=".github/workflows/build.yml">
+name: Build Blink Print Agent
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # 1. Build Windows
+      - name: Build Windows
+        run: |
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H=windowsgui" -o dist/BlinkPrintAgent.exe .
+
+      # 2. Build macOS Universal (Chạy mượt cả Intel và M1/M2/M3)
+      - name: Build macOS Universal App
+        run: |
+          mkdir -p "dist/Blink Print Agent.app/Contents/MacOS"
+          mkdir -p "dist/Blink Print Agent.app/Contents/Resources"
+          
+          # Copy Info.plist vào bundle
+          cp Info.plist "dist/Blink Print Agent.app/Contents/Info.plist"
+
+          # Build cho ARM64 (Apple Silicon) và AMD64 (Intel Mac)
+          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o dist/agent_arm64 .
+          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o dist/agent_amd64 .
+          
+          # Ghép thành Universal Binary chạy mọi máy Mac
+          lipo -create -output "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent" dist/agent_arm64 dist/agent_amd64
+          chmod +x "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent"
+          
+          # Xóa cờ kiểm dịch nội bộ và nén zip bảo toàn quyền execute
+          cd dist
+          rm agent_arm64 agent_amd64
+          zip -ry "BlinkPrintAgent-macOS.zip" "Blink Print Agent.app"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlinkPrintAgent-Release
+          path: |
+            dist/BlinkPrintAgent.exe
+            dist/BlinkPrintAgent-macOS.zip
+</file>
+
+<file path="printer/driver_darwin.go">
+//go:build darwin
+
+package printer
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+)
+
+type DarwinDriver struct{}
+
+func NewDriver() Driver {
+	return &DarwinDriver{}
+}
+
+func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
+	// Ép hệ thống dùng ngôn ngữ chuẩn C/English để output đồng nhất tuyệt đối
+	cmd := exec.Command("/usr/bin/lpstat", "-a")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	out, err := cmd.Output()
+	if err != nil {
+		// Fallback với cờ -e nếu -a bị lỗi
+		cmd = exec.Command("/usr/bin/lpstat", "-e")
+		cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+		out, err = cmd.Output()
+		if err != nil {
+			return []string{}, nil
+		}
+	}
+
+	var printers []string
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// 'lpstat -a' luôn trả về tên máy in ở từ đầu tiên
+		parts := strings.Fields(line)
+		if len(parts) > 0 {
+			if parts[0] == "printer" && len(parts) >= 2 {
+				printers = append(printers, parts[1])
+			} else {
+				printers = append(printers, parts[0])
+			}
+		}
+	}
+	return printers, nil
+}
+
+func (d *DarwinDriver) GetDefaultPrinter() (string, error) {
+	cmd := exec.Command("/usr/bin/lpstat", "-d")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", nil
+	}
+	parts := strings.Split(string(out), ":")
+	if len(parts) >= 2 {
+		return strings.TrimSpace(parts[1]), nil
+	}
+	return "", nil
+}
+
+func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
+	if strings.TrimSpace(printerName) == "" {
+		return HealthInfo{
+			State:   "not_configured",
+			Message: "Chưa chọn máy in cho Blink Print Agent.",
+		}
+	}
+
+	installedList, _ := d.GetInstalledPrinters()
+	installed := false
+	actualPrinterName := strings.TrimSpace(printerName)
+
+	for _, p := range installedList {
+		if strings.EqualFold(strings.TrimSpace(p), actualPrinterName) {
+			installed = true
+			actualPrinterName = p
+			break
+		}
+	}
+
+	if !installed {
+		return HealthInfo{
+			Name:      printerName,
+			State:     "not_installed",
+			Message:   fmt.Sprintf("Máy in %s không tồn tại trong CUPS/macOS.", printerName),
+			Installed: false,
+		}
+	}
+
+	cmd := exec.Command("/usr/bin/lpstat", "-p", actualPrinterName)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	out, err := cmd.Output()
+	statusText := strings.ToLower(string(out))
+
+	if err != nil || strings.Contains(statusText, "disabled") || strings.Contains(statusText, "paused") {
+		return HealthInfo{
+			Name:      actualPrinterName,
+			Installed: true,
+			State:     "paused",
+			Message:   fmt.Sprintf("Hàng đợi máy in %s đang tạm dừng.", actualPrinterName),
+		}
+	}
+
+	return HealthInfo{
+		Name:       actualPrinterName,
+		Installed:  true,
+		Configured: true,
+		Ready:      true,
+		State:      "ready",
+		Message:    "Máy in sẵn sàng.",
+	}
+}
+
+func (d *DarwinDriver) SendRaw(printerName string, data []byte, docName string) error {
+	cmd := exec.Command("/usr/bin/lpr", "-P", printerName, "-o", "raw", "-T", docName)
+	cmd.Stdin = bytes.NewReader(data) // Gửi trực tiếp bytes qua stdin
+	
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("CUPS print error: %s (%w)", stderr.String(), err)
+	}
+	return nil
 }
 </file>
 

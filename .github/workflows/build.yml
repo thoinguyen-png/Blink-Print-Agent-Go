@@ -17,31 +17,35 @@ jobs:
         with:
           go-version: '1.22'
 
-      # 1. Build bản Windows (.exe)
-      - name: Build Windows Binary
+      # 1. Build Windows
+      - name: Build Windows
         run: |
           mkdir -p dist
           GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H=windowsgui" -o dist/BlinkPrintAgent.exe .
 
-      # 2. Build bản macOS (.app)
-      - name: Build macOS Binary & App Bundle
+      # 2. Build macOS Universal (Chạy mượt cả Intel và M1/M2/M3)
+      - name: Build macOS Universal App
         run: |
           mkdir -p "dist/Blink Print Agent.app/Contents/MacOS"
           mkdir -p "dist/Blink Print Agent.app/Contents/Resources"
           
           # Copy Info.plist vào bundle
           cp Info.plist "dist/Blink Print Agent.app/Contents/Info.plist"
+
+          # Build cho ARM64 (Apple Silicon) và AMD64 (Intel Mac)
+          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o dist/agent_arm64 .
+          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o dist/agent_amd64 .
           
-          # Biên dịch cho Apple Silicon (M1/M2/M3)
-          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent" .
+          # Ghép thành Universal Binary chạy mọi máy Mac
+          lipo -create -output "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent" dist/agent_arm64 dist/agent_amd64
           chmod +x "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent"
           
-          # Nén file zip chuẩn định dạng Unix
+          # Xóa cờ kiểm dịch nội bộ và nén zip bảo toàn quyền execute
           cd dist
+          rm agent_arm64 agent_amd64
           zip -ry "BlinkPrintAgent-macOS.zip" "Blink Print Agent.app"
 
-      # 3. Đẩy file Release lên GitHub Artifacts
-      - name: Upload Release Artifacts
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: BlinkPrintAgent-Release

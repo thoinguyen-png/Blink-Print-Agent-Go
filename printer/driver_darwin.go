@@ -119,18 +119,9 @@ func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
 }
 
 func (d *DarwinDriver) SendRaw(printerName string, data []byte, docName string) error {
-	tmpFile, err := os.CreateTemp("", "blink_raw_*.bin")
-	if err != nil {
-		return fmt.Errorf("không thể tạo file in tạm: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.Write(data); err != nil {
-		return fmt.Errorf("lỗi ghi dữ liệu in: %w", err)
-	}
-	_ = tmpFile.Close()
-
-	cmd := exec.Command("/usr/bin/lpr", "-P", printerName, "-o", "raw", "-T", docName, tmpFile.Name())
+	cmd := exec.Command("/usr/bin/lpr", "-P", printerName, "-o", "raw", "-T", docName)
+	cmd.Stdin = bytes.NewReader(data) // Gửi trực tiếp bytes qua stdin
+	
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

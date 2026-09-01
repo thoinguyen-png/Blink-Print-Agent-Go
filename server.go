@@ -86,12 +86,38 @@ func (s *Server) resolvePrinter(settings *AgentSettings, role string) string {
 	return cashier
 }
 
+func (s *Server) getPrinterHealth(printerName string) printer.HealthInfo {
+	if printer.IsNetworkTarget(printerName) {
+		return printer.CheckNetworkHealth(printerName)
+	}
+	return s.driver.GetHealth(printerName)
+}
+
+func (s *Server) sendRawData(printerName string, data []byte, docName string) error {
+	if printer.IsNetworkTarget(printerName) {
+		return printer.SendRawNetwork(printerName, data)
+	}
+	return s.driver.SendRaw(printerName, data, docName)
+}
+
+func (s *Server) getAllAvailablePrinters() []string {
+	installedList, _ := s.driver.GetInstalledPrinters()
+	netPrinters := printer.DiscoverNetworkPrinters()
+
+	all := make([]string, 0, len(installedList)+len(netPrinters))
+	all = append(all, installedList...)
+	for _, ip := range netPrinters {
+		all = append(all, ip)
+	}
+	return all
+}
+
 func (s *Server) handleSecurity(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success":        true,
-		"version":        "0.8.2",
+		"version":        "0.9.0",
 		"token_enforced": false,
 		"origin":         NormalizeOrigin(origin),
 		"origin_allowed": s.security.IsOriginAllowed(origin),
@@ -103,22 +129,22 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	settings := s.store.Load()
 	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
 	targetPrinter := s.resolvePrinter(settings, role)
-	health := s.driver.GetHealth(targetPrinter)
-	installedList, _ := s.driver.GetInstalledPrinters()
+	health := s.getPrinterHealth(targetPrinter)
+	availableList := s.getAllAvailablePrinters()
 	defPrinter, _ := s.driver.GetDefaultPrinter()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success":            true,
 		"name":               "Blink Print Agent",
-		"version":            "0.8.2",
+		"version":            "0.9.0",
 		"status":             "online",
 		"port":               18181,
 		"printer_role":       role,
 		"printer":            health.Name,
 		"defaultPrinter":     defPrinter,
-		"available_printers": installedList, // Đổ danh sách vào Dropdown web
-		"printers":           installedList, // Dự phòng
+		"available_printers": availableList,
+		"printers":           availableList,
 		"printer_ready":      health.Ready,
 		"printer_state":      health.State,
 		"printer_message":    health.Message,
@@ -136,10 +162,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePrinters(w http.ResponseWriter, r *http.Request) {
 	settings := s.store.Load()
 	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
-	list, _ := s.driver.GetInstalledPrinters()
-	def, _ := s.driver.GetDefaultPrinter()
 	target := s.resolvePrinter(settings, role)
-	health := s.driver.GetHealth(target)
+	health := s.getPrinterHealth(target)
+	availableList := s.getAllAvailablePrinters()
+	def, _ := s.driver.GetDefaultPrinter()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -147,7 +173,7 @@ func (s *Server) handlePrinters(w http.ResponseWriter, r *http.Request) {
 		"printer_role":    role,
 		"printer":         target,
 		"defaultPrinter":  def,
-		"printers":        list,
+		"printers":        availableList,
 		"printer_ready":   health.Ready,
 		"printer_state":   health.State,
 		"printer_message": health.Message,
@@ -188,7 +214,7 @@ func (s *Server) handleTestPrint(w http.ResponseWriter, r *http.Request) {
 	settings := s.store.Load()
 	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
 	targetPrinter := s.resolvePrinter(settings, role)
-	health := s.driver.GetHealth(targetPrinter)
+	health := s.getPrinterHealth(targetPrinter)
 
 	if !health.Ready {
 		w.WriteHeader(http.StatusConflict)
@@ -196,7 +222,7 @@ func (s *Server) handleTestPrint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.driver.SendRaw(targetPrinter, printer.BuildCutTestTicket(), "Blink Print Agent - TEST")
+	err := s.sendRawData(targetPrinter, printer.BuildCutTestTicket(), "Blink Print Agent - TEST")
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "message": err.Error()})
@@ -236,7 +262,7 @@ func (s *Server) handleRawPrint(w http.ResponseWriter, r *http.Request) {
 		docName = "Blink Print"
 	}
 
-	if err := s.driver.SendRaw(targetPrinter, rawBytes, docName); err != nil {
+	if err := s.sendRawData(targetPrinter, rawBytes, docName); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "message": err.Error()})
 		return
