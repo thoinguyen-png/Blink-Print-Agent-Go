@@ -17,13 +17,13 @@ jobs:
         with:
           go-version: '1.22'
 
-      # 1. Build Windows
+      # 1. Build Windows (Tắt CGO để cross-compile thuần Go từ macOS sang Windows)
       - name: Build Windows
         run: |
           mkdir -p dist
-          GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H=windowsgui" -o dist/BlinkPrintAgent.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H=windowsgui" -o dist/BlinkPrintAgent.exe .
 
-      # 2. Build macOS Universal (Chạy mượt cả Intel và M1/M2/M3)
+      # 2. Build macOS Universal App (Bật CGO_ENABLED=1 cho systray native Cocoa)
       - name: Build macOS Universal App
         run: |
           mkdir -p "dist/Blink Print Agent.app/Contents/MacOS"
@@ -32,15 +32,17 @@ jobs:
           # Copy Info.plist vào bundle
           cp Info.plist "dist/Blink Print Agent.app/Contents/Info.plist"
 
-          # Build cho ARM64 (Apple Silicon) và AMD64 (Intel Mac)
-          GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o dist/agent_arm64 .
-          GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o dist/agent_amd64 .
+          # Build ARM64 (Apple Silicon M1/M2/M3)
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o dist/agent_arm64 .
+          
+          # Build AMD64 (Intel Mac)
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o dist/agent_amd64 .
           
           # Ghép thành Universal Binary chạy mọi máy Mac
           lipo -create -output "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent" dist/agent_arm64 dist/agent_amd64
           chmod +x "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent"
           
-          # Xóa cờ kiểm dịch nội bộ và nén zip bảo toàn quyền execute
+          # Dọn dẹp và nén file zip chuẩn macOS
           cd dist
           rm agent_arm64 agent_amd64
           zip -ry "BlinkPrintAgent-macOS.zip" "Blink Print Agent.app"
