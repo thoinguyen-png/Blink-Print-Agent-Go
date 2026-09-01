@@ -17,12 +17,14 @@ func NewDriver() Driver {
 }
 
 func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
-	// Dùng đường dẫn tuyệt đối để app chạy ngầm không bị thiếu PATH
+	// Ép hệ thống dùng ngôn ngữ chuẩn C/English để output đồng nhất tuyệt đối
 	cmd := exec.Command("/usr/bin/lpstat", "-a")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	out, err := cmd.Output()
 	if err != nil {
-		// Fallback thử với -p nếu -a lỗi
-		cmd = exec.Command("/usr/bin/lpstat", "-p")
+		// Fallback với cờ -e nếu -a bị lỗi
+		cmd = exec.Command("/usr/bin/lpstat", "-e")
+		cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 		out, err = cmd.Output()
 		if err != nil {
 			return []string{}, nil
@@ -36,12 +38,12 @@ func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
 		if line == "" {
 			continue
 		}
+		// 'lpstat -a' luôn trả về tên máy in ở từ đầu tiên
 		parts := strings.Fields(line)
 		if len(parts) > 0 {
 			if parts[0] == "printer" && len(parts) >= 2 {
 				printers = append(printers, parts[1])
 			} else {
-				// Output của 'lpstat -a' từ đầu tiên luôn là tên máy in
 				printers = append(printers, parts[0])
 			}
 		}
@@ -51,6 +53,7 @@ func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
 
 func (d *DarwinDriver) GetDefaultPrinter() (string, error) {
 	cmd := exec.Command("/usr/bin/lpstat", "-d")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", nil
@@ -63,7 +66,7 @@ func (d *DarwinDriver) GetDefaultPrinter() (string, error) {
 }
 
 func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
-	if printerName == "" {
+	if strings.TrimSpace(printerName) == "" {
 		return HealthInfo{
 			State:   "not_configured",
 			Message: "Chưa chọn máy in cho Blink Print Agent.",
@@ -72,10 +75,10 @@ func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
 
 	installedList, _ := d.GetInstalledPrinters()
 	installed := false
-	actualPrinterName := printerName
+	actualPrinterName := strings.TrimSpace(printerName)
 
 	for _, p := range installedList {
-		if strings.EqualFold(strings.TrimSpace(p), strings.TrimSpace(printerName)) {
+		if strings.EqualFold(strings.TrimSpace(p), actualPrinterName) {
 			installed = true
 			actualPrinterName = p
 			break
@@ -92,6 +95,7 @@ func (d *DarwinDriver) GetHealth(printerName string) HealthInfo {
 	}
 
 	cmd := exec.Command("/usr/bin/lpstat", "-p", actualPrinterName)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	out, err := cmd.Output()
 	statusText := strings.ToLower(string(out))
 
