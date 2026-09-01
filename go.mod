@@ -1,6 +1,6 @@
 module blink-print-agent
 
-go 1.27.0
+go 1.22
 
 require (
 	github.com/getlantern/context v0.0.0-20190109183933-c447772a6520 // indirect
