@@ -23,20 +23,24 @@ jobs:
           mkdir -p dist
           GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H=windowsgui" -o dist/BlinkPrintAgent.exe .
 
-      # 2. Build bản macOS (.app cho Apple Silicon arm64)
+      # 2. Build bản macOS (.app)
       - name: Build macOS Binary & App Bundle
         run: |
           mkdir -p "dist/Blink Print Agent.app/Contents/MacOS"
           mkdir -p "dist/Blink Print Agent.app/Contents/Resources"
           
-          # Biên dịch nhị phân cho M1/M2/M3
+          # Copy Info.plist vào bundle
+          cp Info.plist "dist/Blink Print Agent.app/Contents/Info.plist"
+          
+          # Biên dịch cho Apple Silicon (M1/M2/M3)
           GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent" .
           chmod +x "dist/Blink Print Agent.app/Contents/MacOS/BlinkPrintAgent"
           
+          # Nén file zip chuẩn định dạng Unix
           cd dist
-          zip -r "BlinkPrintAgent-macOS.zip" "Blink Print Agent.app"
+          zip -ry "BlinkPrintAgent-macOS.zip" "Blink Print Agent.app"
 
-      # 3. Đẩy file thành phẩm lên GitHub Artifacts
+      # 3. Đẩy file Release lên GitHub Artifacts
       - name: Upload Release Artifacts
         uses: actions/upload-artifact@v4
         with:
