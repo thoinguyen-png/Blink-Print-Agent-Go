@@ -1,8 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"sync"
 
@@ -12,13 +18,18 @@ import (
 type Server struct {
 	store    *AgentSettingsStore
 	security *SecurityManager
+	tlsMgr   *TLSManager
 	driver   printer.Driver
 	printMu  sync.Mutex
-	httpServ *http.Server
 }
 
 func NewServer(store *AgentSettingsStore, sec *SecurityManager, drv printer.Driver) *Server {
-	return &Server{store: store, security: sec, driver: drv}
+	return &Server{
+		store:    store,
+		security: sec,
+		tlsMgr:   NewTLSManager(store),
+		driver:   drv,
+	}
 }
 
 func (s *Server) Start() error {
@@ -32,8 +43,118 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/v1/print/raw", s.handleRawPrint)
 
 	handler := s.corsMiddleware(mux)
-	s.httpServ = &http.Server{Addr: "127.0.0.1:18181", Handler: handler}
-	return s.httpServ.ListenAndServe()
+
+	rawListener, err := net.Listen("tcp", "127.0.0.1:18181")
+	if err != nil {
+		return fmt.Errorf("không thể mở cổng 18181: %w", err)
+	}
+	defer rawListener.Close()
+
+	tlsConfig, err := s.tlsMgr.GetTLSConfig()
+	if err != nil {
+		// Fallback sang plain HTTP nếu TLS không khởi tạo được
+		httpServ := &http.Server{Handler: handler}
+		return httpServ.Serve(rawListener)
+	}
+
+	httpListener := newChanListener(rawListener.Addr())
+	tlsListener := newChanListener(rawListener.Addr())
+
+	// Khởi chạy HTTP Server (cho localhost / dev)
+	go func() {
+		httpServ := &http.Server{Handler: handler}
+		_ = httpServ.Serve(httpListener)
+	}()
+
+	// Khởi chạy HTTPS Server (cho Web Cloud https://dev.blinkgo.tech)
+	go func() {
+		tlsServ := &http.Server{Handler: handler, TLSConfig: tlsConfig}
+		_ = tlsServ.Serve(tls.NewListener(tlsListener, tlsConfig))
+	}()
+
+	// Dispatcher loop: Đọc byte đầu tiên để phân luồng HTTP vs HTTPS trên cùng cổng 18181
+	for {
+		conn, err := rawListener.Accept()
+		if err != nil {
+			return err
+		}
+
+		go func(c net.Conn) {
+			buf := make([]byte, 1)
+			n, err := c.Read(buf)
+			if err != nil || n == 0 {
+				_ = c.Close()
+				return
+			}
+
+			// Gói lại connection để không làm mất byte đầu tiên
+			wrapped := &prefixedConn{
+				Conn: c,
+				r:    io.MultiReader(bytes.NewReader(buf[:n]), c),
+			}
+
+			if buf[0] == 0x16 { // Byte bắt đầu của gói tin TLS Handshake (HTTPS)
+				select {
+				case tlsListener.ch <- wrapped:
+				default:
+					_ = c.Close()
+				}
+			} else { // Plain HTTP (GET, POST, OPTIONS...)
+				select {
+				case httpListener.ch <- wrapped:
+				default:
+					_ = c.Close()
+				}
+			}
+		}(conn)
+	}
+}
+
+type prefixedConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (c *prefixedConn) Read(p []byte) (int, error) {
+	return c.r.Read(p)
+}
+
+type chanListener struct {
+	addr      net.Addr
+	ch        chan net.Conn
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func newChanListener(addr net.Addr) *chanListener {
+	return &chanListener{
+		addr: addr,
+		ch:   make(chan net.Conn, 128),
+		done: make(chan struct{}),
+	}
+}
+
+func (cl *chanListener) Accept() (net.Conn, error) {
+	select {
+	case c, ok := <-cl.ch:
+		if !ok {
+			return nil, errors.New("listener closed")
+		}
+		return c, nil
+	case <-cl.done:
+		return nil, errors.New("listener closed")
+	}
+}
+
+func (cl *chanListener) Close() error {
+	cl.closeOnce.Do(func() {
+		close(cl.done)
+	})
+	return nil
+}
+
+func (cl *chanListener) Addr() net.Addr {
+	return cl.addr
 }
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {

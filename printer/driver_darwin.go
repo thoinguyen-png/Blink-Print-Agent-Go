@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -16,13 +17,16 @@ func NewDriver() Driver {
 	return &DarwinDriver{}
 }
 
+// GetInstalledPrinters lấy danh sách máy in CUPS hiện có và tự động kích hoạt máy in USB vừa cắm vào (Zero-Driver)
 func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
-	// Ép hệ thống dùng ngôn ngữ chuẩn C/English để output đồng nhất tuyệt đối
+	// 1. Tự động quét và kích hoạt máy in USB mới cắm mà chưa tạo queue (Plug & Play không cần cài driver)
+	d.autoSetupUSBPrinters()
+
+	// 2. Lấy danh sách máy in từ CUPS
 	cmd := exec.Command("/usr/bin/lpstat", "-a")
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	out, err := cmd.Output()
 	if err != nil {
-		// Fallback với cờ -e nếu -a bị lỗi
 		cmd = exec.Command("/usr/bin/lpstat", "-e")
 		cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 		out, err = cmd.Output()
@@ -38,7 +42,6 @@ func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
 		if line == "" {
 			continue
 		}
-		// 'lpstat -a' luôn trả về tên máy in ở từ đầu tiên
 		parts := strings.Fields(line)
 		if len(parts) > 0 {
 			if parts[0] == "printer" && len(parts) >= 2 {
@@ -49,6 +52,63 @@ func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
 		}
 	}
 	return printers, nil
+}
+
+// autoSetupUSBPrinters tự động phát hiện thiết bị USB cắm vào và tạo RAW queue tự động
+func (d *DarwinDriver) autoSetupUSBPrinters() {
+	cmd := exec.Command("/usr/sbin/lpinfo", "-v")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+
+	// Lấy danh sách máy in đã có
+	existingCmd := exec.Command("/usr/bin/lpstat", "-a")
+	existingCmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	existingOut, _ := existingCmd.Output()
+	existingStr := string(existingOut)
+
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Tìm các cổng USB trực tiếp: "direct usb://..."
+		if strings.HasPrefix(line, "direct usb://") || strings.HasPrefix(line, "usb://") {
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				continue
+			}
+			uri := parts[1]
+
+			// Tạo tên máy in thân thiện từ URI (VD: usb://Xprinter/XP-80C -> Xprinter_XP_80C)
+			printerName := extractCleanNameFromURI(uri)
+			if printerName == "" {
+				printerName = "Blink_USB_Printer"
+			}
+
+			// Nếu máy in này chưa có trong CUPS, tự động tạo RAW queue
+			if !strings.Contains(existingStr, printerName) {
+				adminCmd := exec.Command("/usr/sbin/lpadmin", "-p", printerName, "-v", uri, "-E", "-m", "raw")
+				_ = adminCmd.Run()
+			}
+		}
+	}
+}
+
+var cleanNameRegex = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+func extractCleanNameFromURI(uri string) string {
+	// uri ví dụ: usb://Xprinter/XP-80C?serial=... hoặc usb://POS-80...
+	trimmed := strings.TrimPrefix(uri, "direct ")
+	trimmed = strings.TrimPrefix(trimmed, "usb://")
+	if idx := strings.Index(trimmed, "?"); idx != -1 {
+		trimmed = trimmed[:idx]
+	}
+	parts := strings.Split(trimmed, "/")
+	name := strings.Join(parts, "_")
+	name = cleanNameRegex.ReplaceAllString(name, "_")
+	name = strings.Trim(name, "_")
+	return name
 }
 
 func (d *DarwinDriver) GetDefaultPrinter() (string, error) {

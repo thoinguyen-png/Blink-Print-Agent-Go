@@ -21,7 +21,7 @@ jobs:
       - name: Build Windows
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H=windowsgui" -o dist/BlinkPrintAgent.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H=windowsgui" -o dist/BlinkPrintAgentGo.exe .
 
       # 2. Build macOS Universal App (Bật CGO_ENABLED=1 cho systray native Cocoa)
       - name: Build macOS Universal App
@@ -52,5 +52,5 @@ jobs:
         with:
           name: BlinkPrintAgent-Release
           path: |
-            dist/BlinkPrintAgent.exe
+            dist/BlinkPrintAgentGo.exe
             dist/BlinkPrintAgent-macOS.zip

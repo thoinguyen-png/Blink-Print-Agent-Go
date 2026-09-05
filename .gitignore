@@ -1,0 +1,19 @@
+# Binaries & Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+dist/
+build/
+
+# Certificate keys & local config
+cert.pem
+key.pem
+settings.json
+
+# System & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
