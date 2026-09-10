@@ -1,4 +1,4 @@
-﻿name: Auto-Renew SSL Certificate (Lets Encrypt)
+name: Auto-Renew SSL Certificate (Lets Encrypt)
 
 on:
   schedule:
@@ -69,10 +69,14 @@ jobs:
               privkey = f.read()
 
           cert = x509.load_pem_x509_certificate(fullchain.encode("utf-8"), default_backend())
+          not_after = ""
           try:
-              not_after = cert.not_after_utc.strftime("%Y-%m-%d %H:%M:%S")
-          except AttributeError:
-              not_after = cert.not_after.strftime("%Y-%m-%d %H:%M:%S")
+              if hasattr(cert, "not_valid_after_utc"):
+                  not_after = cert.not_valid_after_utc.strftime("%Y-%m-%d %H:%M:%S")
+              elif hasattr(cert, "not_valid_after"):
+                  not_after = cert.not_valid_after.strftime("%Y-%m-%d %H:%M:%S")
+          except Exception as e:
+              print(f"Warning: could not parse expiry: {e}")
 
           print(f"Issued certificate valid until: {not_after}")
 
@@ -106,7 +110,16 @@ jobs:
                   print(f"Failed to post to {url}: {e}")
 
           if not success:
-              print("Warning: Could not contact endpoints (maybe server is not yet deployed).")
+              print("Note: Could not sync to Blink Cloud endpoints yet (server may not be deployed yet). Certificate was issued successfully.")
           else:
               print("SSL Certificate renewal and cloud synchronization completed successfully!")
           EOF
+
+      - name: Archive Certificate Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: letsencrypt-local-blinkgo-tech
+          path: |
+            certbot/config/live/local.blinkgo.tech/fullchain.pem
+            certbot/config/live/local.blinkgo.tech/privkey.pem
+          if-no-files-found: ignore
