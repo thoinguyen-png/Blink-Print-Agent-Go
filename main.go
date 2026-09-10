@@ -28,10 +28,14 @@ func main() {
 		fmt.Println("⚡ Khởi động cùng hệ thống: Đã kích hoạt")
 	}
 
+	// Bắt đầu tiến trình tự động kiểm tra và cập nhật phiên bản ngầm
+	StartAutoUpdater(store)
+
 	fmt.Println("==================================================")
-	fmt.Println("🚀 BLINK PRINT AGENT v0.9.0 ĐANG HOẠT ĐỘNG")
+	fmt.Printf("🚀 BLINK PRINT AGENT v%s ĐANG HOẠT ĐỘNG\n", AppVersion)
 	fmt.Println("📍 HTTP Localhost : http://127.0.0.1:18181")
 	fmt.Println("🔒 HTTPS Cloud    : https://local.blinkgo.tech:18181")
+	fmt.Println("🔄 Tự cập nhật    : Đang giám sát (Auto-update active)")
 	fmt.Println("==================================================")
 	fmt.Println("Agent đang chạy ngầm sẵn sàng nhận lệnh in...")
 

@@ -238,7 +238,7 @@ func (s *Server) handleSecurity(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success":        true,
-		"version":        "0.9.0",
+		"version":        AppVersion,
 		"token_enforced": false,
 		"origin":         NormalizeOrigin(origin),
 		"origin_allowed": s.security.IsOriginAllowed(origin),
@@ -258,7 +258,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success":            true,
 		"name":               "Blink Print Agent",
-		"version":            "0.9.0",
+		"version":            AppVersion,
 		"status":             "online",
 		"port":               18181,
 		"printer_role":       role,
