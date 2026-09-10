@@ -23,6 +23,11 @@ func main() {
 	drv = printer.NewDriver()
 	server = NewServer(store, security, drv)
 
+	// Tự động cấu hình khởi động cùng hệ điều hành
+	if err := ensureAutoStart(); err == nil {
+		fmt.Println("⚡ Khởi động cùng hệ thống: Đã kích hoạt")
+	}
+
 	fmt.Println("==================================================")
 	fmt.Println("🚀 BLINK PRINT AGENT v0.9.0 ĐANG HOẠT ĐỘNG")
 	fmt.Println("📍 HTTP Localhost : http://127.0.0.1:18181")
