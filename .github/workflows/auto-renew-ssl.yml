@@ -1,0 +1,112 @@
+﻿name: Auto-Renew SSL Certificate (Lets Encrypt)
+
+on:
+  schedule:
+    # Tự động chạy định kỳ vào 03:00 UTC ngày mùng 1 của mỗi 2 tháng (60 ngày)
+    - cron: '0 3 1 */2 *'
+  workflow_dispatch: # Cho phép quản trị viên bấm nút "Run workflow" thủ công bất cứ lúc nào
+
+jobs:
+  renew-ssl:
+    name: Renew & Sync Lets Encrypt SSL
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Certbot and Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install certbot certbot-dns-cloudflare requests cryptography
+
+      - name: Issue Certificate via Cloudflare DNS-01 Challenge
+        env:
+          CF_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
+        run: |
+          mkdir -p certbot/credentials certbot/config certbot/work certbot/logs
+          echo "dns_cloudflare_api_token = $CF_TOKEN" > certbot/credentials/cloudflare.ini
+          chmod 600 certbot/credentials/cloudflare.ini
+
+          certbot certonly \
+            --config-dir certbot/config \
+            --work-dir certbot/work \
+            --logs-dir certbot/logs \
+            --non-interactive \
+            --agree-tos \
+            --email dev@blinkgo.tech \
+            --dns-cloudflare \
+            --dns-cloudflare-credentials certbot/credentials/cloudflare.ini \
+            --dns-cloudflare-propagation-seconds 25 \
+            -d local.blinkgo.tech
+
+          rm -f certbot/credentials/cloudflare.ini
+
+      - name: Synchronize Certificate to Cloud Run & Cloud SQL
+        env:
+          SYNC_TOKEN: ${{ secrets.AGENT_CERT_SYNC_TOKEN }}
+        run: |
+          python - << 'EOF'
+          import os, sys, requests
+          from datetime import datetime
+          from cryptography import x509
+          from cryptography.hazmat.backends import default_backend
+
+          cert_path = "certbot/config/live/local.blinkgo.tech/fullchain.pem"
+          key_path = "certbot/config/live/local.blinkgo.tech/privkey.pem"
+
+          if not os.path.exists(cert_path) or not os.path.exists(key_path):
+              print(f"Error: Certificate files not found at {cert_path}")
+              sys.exit(1)
+
+          with open(cert_path, "r", encoding="utf-8") as f:
+              fullchain = f.read()
+          with open(key_path, "r", encoding="utf-8") as f:
+              privkey = f.read()
+
+          cert = x509.load_pem_x509_certificate(fullchain.encode("utf-8"), default_backend())
+          try:
+              not_after = cert.not_after_utc.strftime("%Y-%m-%d %H:%M:%S")
+          except AttributeError:
+              not_after = cert.not_after.strftime("%Y-%m-%d %H:%M:%S")
+
+          print(f"Issued certificate valid until: {not_after}")
+
+          sync_token = os.environ.get("SYNC_TOKEN", "blink_ssl_secret_sync_token_2026")
+          payload = {
+              "domain": "local.blinkgo.tech",
+              "fullchain": fullchain,
+              "privkey": privkey,
+              "not_after": not_after
+          }
+
+          headers = {
+              "Content-Type": "application/json",
+              "X-Sync-Token": sync_token
+          }
+
+          endpoints = [
+              "https://api.blinkgo.tech/api/agent/save-cert.php",
+              "https://dev.blinkgo.tech/api/agent/save-cert.php"
+          ]
+
+          success = False
+          for url in endpoints:
+              try:
+                  print(f"Sending certificate to {url}...")
+                  resp = requests.post(url, json=payload, headers=headers, timeout=20)
+                  print(f"Response ({resp.status_code}): {resp.text}")
+                  if resp.status_code == 200:
+                      success = True
+              except Exception as e:
+                  print(f"Failed to post to {url}: {e}")
+
+          if not success:
+              print("Warning: Could not contact endpoints (maybe server is not yet deployed).")
+          else:
+              print("SSL Certificate renewal and cloud synchronization completed successfully!")
+          EOF
