@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,22 +20,55 @@ type SecurityManager struct {
 	allowedRoots []string
 }
 
+// CleanHostname loại bỏ scheme (http/https), path, port để lấy chính xác hostname
+func CleanHostname(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, "://") {
+		if u, err := url.Parse(s); err == nil {
+			s = strings.ToLower(u.Hostname())
+		}
+	}
+	if idx := strings.Index(s, "/"); idx != -1 {
+		s = s[:idx]
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		return strings.ToLower(host)
+	}
+	return s
+}
+
 func NewSecurityManager(store *AgentSettingsStore) *SecurityManager {
 	sm := &SecurityManager{
 		store:        store,
 		allowedRoots: []string{"blinkgo.tech", "santori.vn"}, // Domain mặc định cơ sở
 	}
 
-	// Nạp domain từ cache cục bộ đã lưu trước đó
+	// Nạp domain từ cache cục bộ đã lưu trước đó và chuẩn hóa
 	cachedSettings := store.Load()
 	if len(cachedSettings.AllowedOrigins) > 0 {
-		sm.allowedRoots = cachedSettings.AllowedOrigins
+		for _, o := range cachedSettings.AllowedOrigins {
+			if c := CleanHostname(o); c != "" {
+				sm.addRootNoLock(c)
+			}
+		}
 	}
 
 	// Bắt đầu tiến trình tự động đồng bộ từ Cloud ngầm
 	go sm.startSyncWorker()
 
 	return sm
+}
+
+func (sm *SecurityManager) addRootNoLock(root string) {
+	for _, existing := range sm.allowedRoots {
+		if existing == root {
+			return
+		}
+	}
+	sm.allowedRoots = append(sm.allowedRoots, root)
 }
 
 // Kiểm tra xem Origin gửi lên có hợp lệ hay không (hỗ trợ cả root domain và subdomain)
@@ -64,7 +98,7 @@ func (sm *SecurityManager) IsOriginAllowed(origin string) bool {
 
 	// 2. Cho phép chính xác domain hoặc bất kỳ subdomain nào của root domain
 	for _, root := range sm.allowedRoots {
-		rootNorm := strings.ToLower(strings.TrimSpace(root))
+		rootNorm := CleanHostname(root)
 		if rootNorm == "" {
 			continue
 		}
@@ -99,13 +133,22 @@ func (sm *SecurityManager) fetchRemoteOrigins() {
 	}
 
 	sm.mu.Lock()
-	sm.allowedRoots = remoteDomains
+	sm.allowedRoots = []string{"blinkgo.tech", "santori.vn"}
+	var cleanedDomains []string
+	for _, d := range remoteDomains {
+		if c := CleanHostname(d); c != "" {
+			sm.addRootNoLock(c)
+			cleanedDomains = append(cleanedDomains, c)
+		}
+	}
 	sm.mu.Unlock()
 
 	// Cập nhật lưu vào file cấu hình máy tính để dùng offline
-	settings := sm.store.Load()
-	settings.AllowedOrigins = remoteDomains
-	_ = sm.store.Save(settings)
+	if len(cleanedDomains) > 0 {
+		settings := sm.store.Load()
+		settings.AllowedOrigins = cleanedDomains
+		_ = sm.store.Save(settings)
+	}
 }
 
 func NormalizeOrigin(origin string) string {
