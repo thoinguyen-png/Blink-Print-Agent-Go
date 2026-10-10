@@ -9,20 +9,26 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type DarwinDriver struct{}
 
 func NewDriver() Driver {
-	return &DarwinDriver{}
+	d := &DarwinDriver{}
+	go func() {
+		d.autoSetupUSBPrinters()
+		ticker := time.NewTicker(1 * time.Minute)
+		for range ticker.C {
+			d.autoSetupUSBPrinters()
+		}
+	}()
+	return d
 }
 
-// GetInstalledPrinters lấy danh sách máy in CUPS hiện có và tự động kích hoạt máy in USB vừa cắm vào (Zero-Driver)
+// GetInstalledPrinters lấy danh sách máy in CUPS hiện có (nhanh < 0.1s)
 func (d *DarwinDriver) GetInstalledPrinters() ([]string, error) {
-	// 1. Tự động quét và kích hoạt máy in USB mới cắm mà chưa tạo queue (Plug & Play không cần cài driver)
-	d.autoSetupUSBPrinters()
-
-	// 2. Lấy danh sách máy in từ CUPS
+	// Lấy danh sách máy in từ CUPS
 	cmd := exec.Command("/usr/bin/lpstat", "-a")
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	out, err := cmd.Output()
