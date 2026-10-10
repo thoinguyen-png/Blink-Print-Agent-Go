@@ -56,13 +56,8 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// Chạy systray ngầm (nếu môi trường hỗ trợ tray icon)
-	go func() {
-		systray.Run(onReady, onExit)
-	}()
-
-	// Giữ tiến trình luôn chạy liên tục
-	select {}
+	// Chạy systray trực tiếp trên Main Thread (bắt buộc với macOS Cocoa/AppKit và Windows)
+	systray.Run(onReady, onExit)
 }
 
 func onReady() {
