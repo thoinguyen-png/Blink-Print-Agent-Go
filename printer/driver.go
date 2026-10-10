@@ -105,14 +105,50 @@ func SendRawNetwork(target string, data []byte) error {
 	return err
 }
 
+var (
+	cachedNetPrinters []string
+	cachedNetMu       sync.RWMutex
+	scanningNet       bool
+	scanningMu        sync.Mutex
+)
+
 func DiscoverNetworkPrinters() []string {
+	cachedNetMu.RLock()
+	hasCache := cachedNetPrinters != nil
+	result := make([]string, len(cachedNetPrinters))
+	copy(result, cachedNetPrinters)
+	cachedNetMu.RUnlock()
+
+	go triggerAsyncScan()
+
+	if hasCache {
+		return result
+	}
+	return []string{}
+}
+
+func triggerAsyncScan() {
+	scanningMu.Lock()
+	if scanningNet {
+		scanningMu.Unlock()
+		return
+	}
+	scanningNet = true
+	scanningMu.Unlock()
+
+	defer func() {
+		scanningMu.Lock()
+		scanningNet = false
+		scanningMu.Unlock()
+	}()
+
 	var found []string
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return found
+		return
 	}
 
 	var localSubnets []string
@@ -141,5 +177,8 @@ func DiscoverNetworkPrinters() []string {
 	}
 
 	wg.Wait()
-	return found
+
+	cachedNetMu.Lock()
+	cachedNetPrinters = found
+	cachedNetMu.Unlock()
 }
