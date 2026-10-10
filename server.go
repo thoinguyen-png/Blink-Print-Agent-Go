@@ -335,6 +335,12 @@ func (s *Server) handleTestPrint(w http.ResponseWriter, r *http.Request) {
 	settings := s.store.Load()
 	role := printer.NormalizeRole(r.URL.Query().Get("printer_role"))
 	targetPrinter := s.resolvePrinter(settings, role)
+	if prtName := r.URL.Query().Get("printer_name"); prtName != "" {
+		targetPrinter = prtName
+	} else if ipAddr := r.URL.Query().Get("ip_address"); ipAddr != "" {
+		targetPrinter = ipAddr
+	}
+
 	health := s.getPrinterHealth(targetPrinter)
 
 	if !health.Ready {
@@ -359,6 +365,8 @@ func (s *Server) handleRawPrint(w http.ResponseWriter, r *http.Request) {
 		DocumentName string `json:"document_name"`
 		RawBase64    string `json:"raw_base64"`
 		PrinterRole  string `json:"printer_role"`
+		PrinterName  string `json:"printer_name"`
+		IPAddress    string `json:"ip_address"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RawBase64 == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -377,6 +385,11 @@ func (s *Server) handleRawPrint(w http.ResponseWriter, r *http.Request) {
 	settings := s.store.Load()
 	role := printer.NormalizeRole(body.PrinterRole)
 	targetPrinter := s.resolvePrinter(settings, role)
+	if body.IPAddress != "" {
+		targetPrinter = body.IPAddress
+	} else if body.PrinterName != "" {
+		targetPrinter = body.PrinterName
+	}
 
 	docName := body.DocumentName
 	if docName == "" {

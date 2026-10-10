@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"crypto/ecdsa"
@@ -275,6 +275,8 @@ func (tm *TLSManager) generateFallbackCert() (tls.Certificate, error) {
 			"localhost",
 			"local.santori.vn",
 			"*.santori.vn",
+			"local.max360.tech",
+			"*.max360.tech",
 		},
 		IPAddresses: []net.IP{
 			net.ParseIP("127.0.0.1"),

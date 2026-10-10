@@ -43,7 +43,7 @@ func CleanHostname(raw string) string {
 func NewSecurityManager(store *AgentSettingsStore) *SecurityManager {
 	sm := &SecurityManager{
 		store:        store,
-		allowedRoots: []string{"blinkgo.tech", "santori.vn"}, // Domain mặc định cơ sở
+		allowedRoots: []string{"blinkgo.tech", "santori.vn", "max360.tech"}, // Domain mặc định cơ sở
 	}
 
 	// Nạp domain từ cache cục bộ đã lưu trước đó và chuẩn hóa
@@ -133,7 +133,7 @@ func (sm *SecurityManager) fetchRemoteOrigins() {
 	}
 
 	sm.mu.Lock()
-	sm.allowedRoots = []string{"blinkgo.tech", "santori.vn"}
+	sm.allowedRoots = []string{"blinkgo.tech", "santori.vn", "max360.tech"}
 	var cleanedDomains []string
 	for _, d := range remoteDomains {
 		if c := CleanHostname(d); c != "" {
